@@ -1,8 +1,6 @@
 from decorator import (
-    deprecated,
     timer,
     timer_format,
-    logged,
     log_method_calls
 )
 from preprocess import (
@@ -16,7 +14,7 @@ from recommender import (
 
 
 __all__ = [
-    "deprecated", "timer", "timer_format", "logged", "log_method_calls",
+    "timer", "timer_format", "log_method_calls",
     "process_raw_documents", "preprocess_vietnamese_accent", "preprocess",
-    "RecommendSystem"
+    "RecommendSystem",
 ]
