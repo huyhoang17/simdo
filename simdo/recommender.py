@@ -39,9 +39,6 @@ def logging_config(logger, file_handler=None):
 
 class BaseRecommender(ABC):
 
-    def __init__(self):
-        pass
-
     @abstractmethod
     def fit(self):
         pass
@@ -55,7 +52,7 @@ class BaseRecommender(ABC):
         pass
 
 
-@log_method_calls()
+# @log_method_calls()
 class RecommendSystem(BaseRecommender):
     """
     Base class to building a content-base recommender system
@@ -100,7 +97,7 @@ class RecommendSystem(BaseRecommender):
         self.metric = metric
         self.verbose = verbose
         self.verbose_cluster = verbose_cluster
-        self.stop_words = None
+        self.stop_words = []
 
         # checked value
         self.use_cluster = use_cluster
@@ -131,7 +128,6 @@ class RecommendSystem(BaseRecommender):
         with open(path_stop_words) as f:
             for line in f:
                 self.stop_words.append(line.strip())
-        return self.stop_words
 
     def _vectorizer(self):
         """
@@ -289,9 +285,6 @@ class RecommendSystem(BaseRecommender):
         ----------
         raw_documents: iterable (recommend)
         """
-        if raw_documents is None:
-            raw_documents = _get_dataset()
-        # process lsa_model
         self._transform(raw_documents)
         self._save_model(self.lsa_matrix, "lsa_matrix")
         if not self.use_cluster:
@@ -300,7 +293,6 @@ class RecommendSystem(BaseRecommender):
         else:
             self.rs_model = self._build_cluster_kmean(self.lsa_matrix)
             self._save_model(self.rs_model, "kmean_dump")
-        del self.lsa_matrix
         return self
 
     def transform(self, raw_document, tfidf_model=None,
@@ -356,7 +348,7 @@ class RecommendSystem(BaseRecommender):
             self.ind_documents = random.sample(ind_documents, self.n_samples)
 
     # NOTE: use __enter__() and __exit__() to process context-manager (with)
-    # Ex: `with RecommenderSystem as rs: ..`
+    # Ex: `with RecommenderSystem() as rs: ..`
     def __enter__(self):
         """
         Performs any necessary initialization, and returns a value.
