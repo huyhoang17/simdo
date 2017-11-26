@@ -37,6 +37,7 @@ def logging_config(logger, file_handler=None):
     logger.addHandler(handler)
 
 
+@log_method_calls()
 class BaseRecommender(ABC):
 
     @abstractmethod
@@ -251,7 +252,7 @@ class RecommendSystem(BaseRecommender):
     def cluster_center_space(self):
         if self.rs_model is not None and self.use_cluster:
             logger.info(
-                "Top terms per cluster:",
+                "Top terms per cluster: %s",
                 self.rs_model.cluster_centers_.shape
             )
             if self.n_components:
