@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 import logging
 import random
 
@@ -18,7 +17,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import Normalizer
 
-
+from _base import BaseRecommender
 from decorator import log_method_calls
 
 
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler())
 
 
-def logging_config(logger, file_handler=None):
+def logging_config(logger, file_handler="spam.log"):
     handler = logging.FileHandler(file_handler)
     handler.setLevel(logging.DEBUG)
 
@@ -35,21 +34,6 @@ def logging_config(logger, file_handler=None):
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-
-
-class BaseRecommender(ABC):
-
-    @abstractmethod
-    def fit(self):
-        pass
-
-    @abstractmethod
-    def transform(self):
-        pass
-
-    @abstractmethod
-    def evaluate(self):
-        pass
 
 
 @log_method_calls()
@@ -119,11 +103,6 @@ class RecommendSystem(BaseRecommender):
         # logging
         logging_config(logger)
 
-    def _save_model(self, model, name, path='model/'):
-        path_file_dump = path + name + ".pkl"
-        logger.info("==> Saving %s", path_file_dump)
-        joblib.dump(model, path_file_dump)
-
     def _stop_words(self, path_stop_words=None):
         with open(path_stop_words) as f:
             for line in f:
@@ -180,9 +159,6 @@ class RecommendSystem(BaseRecommender):
         self.lsa_model = lsa.fit(tfidf_matrix)
         self.lsa_matrix = lsa.fit_transform(tfidf_matrix)
 
-        self._save_model(self.tfidf_model, "tfidf_model")
-        self._save_model(self.lsa_model, "lsa_model")
-
     def _build_k_nearest_neighbors(self, poster_vect):
         """
         Unsupervised learner for implementing neighbor searches.
@@ -206,7 +182,7 @@ class RecommendSystem(BaseRecommender):
     def _build_cluster_kmean(self, poster_vect):
         if self.lsa_matrix is None:
             raise NotImplementedError("Must fit LSA model before clustering")
-        if self.minibatch:
+        if self.use_minibatch:
             logger.info("==> Using Minibatch KMean Cluster")
             rs_model = MiniBatchKMeans(
                 n_clusters=self.n_clusters,
@@ -240,15 +216,14 @@ class RecommendSystem(BaseRecommender):
         self._vectorizer(raw_documents)
         if not self.use_cluster:
             self.rs_model = self._build_k_nearest_neighbors(self.lsa_matrix)
-            self._save_model(self.rs_model, "knn_dump")
+            # self._save_model(self.rs_model, "knn_dump")
         else:
             self.rs_model = self._build_cluster_kmean(self.lsa_matrix)
-            self._save_model(self.rs_model, "kmean_dump")
+            # self._save_model(self.rs_model, "kmean_dump")
         del self.lsa_matrix
         return self
 
-    def transform(self, raw_document, path_tfidf_model=None,
-                  path_lsa_model=None, load_model=False):
+    def transform(self, raw_document, load_model=False, path_model=None):
         """
         Transform single document from tf-idf vector to SVD-LSA model
 
@@ -260,20 +235,22 @@ class RecommendSystem(BaseRecommender):
             raw_document = list(raw_document)
 
         if load_model:
-            if path_tfidf_model and path_lsa_model:
-                tfidf_model = joblib.load(path_tfidf_model)
-                lsa_model = joblib.load(path_lsa_model)
+            if path_model:
+                self.path_model = path_model
+                self._model = joblib.load(path_model)
+                tfidf_model = self._model.tfidf_model
+                lsa_model = self._model.lsa_model
 
                 tfidf_vectorizer = tfidf_model.transform(raw_document)
                 vectorizer = lsa_model.transform(tfidf_vectorizer)
             else:
-                raise NotImplementedError("Path models are empty")
+                raise NotImplementedError("Path model is empty!")
         else:
             tfidf_vectorizer = self.tfidf_model.transform(raw_document)
             vectorizer = self.lsa_model.transform(tfidf_vectorizer)
         return vectorizer
 
-    def evaluate(self, vectorizer, load_model=False):
+    def evaluate(self, vectorizer):
         """
         Predict model - find document similarity
 
@@ -284,26 +261,15 @@ class RecommendSystem(BaseRecommender):
         load_model: bool, default to False
             If True, load model from pickle file
         """
-        if self.rs_model is None and not load_model:
+        if self.rs_model is None:
             raise NotImplementedError('Please fit model before predict!')
 
-        if not self.use_cluster:
-            if load_model:
-                self.rs_model = joblib.load("model/knn_dump.pkl")
-
-            _, recommend_index = self.rs_model.kneighbors(vectorizer)
-            self.ind_documents = list(recommend_index.flatten())
-        else:
-            if load_model:
-                self.rs_model = joblib.load("model/kmean_dump.pkl")
-            idx_cluster = self.rs_model.predict(vectorizer)
-            ind_documents = np.where(self.rs_model.labels_ == idx_cluster)[0]
+        if self.use_cluster:
+            idx_cluster = self._model.rs_model.predict(vectorizer)
+            ind_documents = list(np.where(
+                self._model.rs_model.labels_ == idx_cluster
+            )[0])
             self.ind_documents = random.sample(ind_documents, self.n_samples)
-
-    # NOTE: use __enter__() and __exit__() to process context-manager (with)
-    # Ex: `with RecommenderSystem() as rs: ..`
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False  # True: Suppress this exception
+        else:
+            _, recommend_index = self._model.rs_model.kneighbors(vectorizer)
+            self.ind_documents = list(recommend_index.flatten())
