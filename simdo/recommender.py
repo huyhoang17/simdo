@@ -28,7 +28,7 @@ logger.addHandler(logging.StreamHandler())
 
 def logging_config(logger, file_handler=None):
     handler = logging.FileHandler(file_handler)
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -37,7 +37,6 @@ def logging_config(logger, file_handler=None):
     logger.addHandler(handler)
 
 
-@log_method_calls()
 class BaseRecommender(ABC):
 
     @abstractmethod
@@ -53,7 +52,7 @@ class BaseRecommender(ABC):
         pass
 
 
-# @log_method_calls()
+@log_method_calls()
 class RecommendSystem(BaseRecommender):
     """
     Base class to building a content-base recommender system
@@ -120,9 +119,9 @@ class RecommendSystem(BaseRecommender):
         # logging
         logging_config(logger)
 
-    def _save_model(self, model, name, path='/tmp/model/'):
+    def _save_model(self, model, name, path='model/'):
         path_file_dump = path + name + ".pkl"
-        logger.info("Saving %s", path_file_dump)
+        logger.info("==> Saving %s", path_file_dump)
         joblib.dump(model, path_file_dump)
 
     def _stop_words(self, path_stop_words=None):
@@ -130,7 +129,7 @@ class RecommendSystem(BaseRecommender):
             for line in f:
                 self.stop_words.append(line.strip())
 
-    def _vectorizer(self):
+    def _vectorizer(self, dataset):
         """
         Apply tf-idf (Term Frequency - Inverse Document Frequency) model
         to dataset
@@ -170,38 +169,21 @@ class RecommendSystem(BaseRecommender):
                 use_idf=self.use_idf
             )
 
+        tfidf_matrix = vectorizer.fit_transform(dataset)
         self.tfidf_model = vectorizer
+        del dataset
 
-    def _fit_vectorizer(self, vectorizer, dataset):
-        """
-        Transform dataset into tf-idf model
-
-        Parameters
-        ----------
-        vectorizer: `tf-idf` obj
-        dataset: iterable (recommend)
-        """
-        # TODO
-        # from itertools import tee
-        # clone_dataset, _ = tee(dataset)
-        clone_dataset = _get_dataset()
-        self.tfidf_model = vectorizer.fit(dataset)
-        self.tfidf_matrix = vectorizer.fit_transform(clone_dataset)
-        del dataset, clone_dataset
-        self._save_model(self.tfidf_model, "tfidf_model")
-        self._save_model(self.tfidf_matrix, "tfidf_matrix")
-
-    def _truncate_LSA(self):
         svd = TruncatedSVD(self.n_components)
         normalizer = Normalizer(copy=False)
         lsa = make_pipeline(svd, normalizer)
 
-        self.lsa_model = lsa.fit(self.tfidf_matrix)
-        self.lsa_matrix = lsa.fit_transform(self.tfidf_matrix)
-        del lsa
+        self.lsa_model = lsa.fit(tfidf_matrix)
+        self.lsa_matrix = lsa.fit_transform(tfidf_matrix)
+
+        self._save_model(self.tfidf_model, "tfidf_model")
         self._save_model(self.lsa_model, "lsa_model")
 
-    def _build_k_nearest_neighbors(self, poster_vect, n_recommend=20):
+    def _build_k_nearest_neighbors(self, poster_vect):
         """
         Unsupervised learner for implementing neighbor searches.
         Create nn model from svd matrix
@@ -213,8 +195,8 @@ class RecommendSystem(BaseRecommender):
         n_recommend: int, default=20
             Top n similar document evaluate by metric (default: `cosine`)
         """
-        if n_recommend is None:
-            n_recommend = poster_vect.shape[0]
+        if self.n_recommend is None:
+            self.n_recommend = poster_vect.shape[0]
         rs_model = NearestNeighbors(
             n_neighbors=self.n_recommend, metric=self.metric
         ).fit(poster_vect)
@@ -223,11 +205,10 @@ class RecommendSystem(BaseRecommender):
 
     def _build_cluster_kmean(self, poster_vect):
         if self.lsa_matrix is None:
-            logger.warning("Must fit LSA model before clustering")
-            return self
+            raise NotImplementedError("Must fit LSA model before clustering")
         if self.minibatch:
-            logger.info("Using minibatch kmean")
-            km_model = MiniBatchKMeans(
+            logger.info("==> Using Minibatch KMean Cluster")
+            rs_model = MiniBatchKMeans(
                 n_clusters=self.n_clusters,
                 init='k-means++',
                 n_init=1,
@@ -235,48 +216,18 @@ class RecommendSystem(BaseRecommender):
                 batch_size=1000,
                 verbose=self.verbose_cluster
             )
-            km_model.partial_fit(poster_vect)
+            rs_model.partial_fit(poster_vect)
         else:
-            logger.info("Using kmean")
-            km_model = KMeans(
+            logger.info("==> Using KMean Cluster")
+            rs_model = KMeans(
                 n_clusters=self.n_clusters,
                 init='k-means++',
                 max_iter=100,
                 n_init=1,
                 verbose=self.verbose_cluster
             )
-            km_model.fit(poster_vect)
-        return km_model
-
-    # TODO
-    def cluster_center_space(self):
-        if self.rs_model is not None and self.use_cluster:
-            logger.info(
-                "Top terms per cluster: %s",
-                self.rs_model.cluster_centers_.shape
-            )
-            if self.n_components:
-                # FIX
-                original_space_centroids = self.svd.inverse_transform(
-                    self.rs_model.cluster_centers_
-                )
-                order_centroids = original_space_centroids.argsort()[:, ::-1]
-            else:
-                order_centroids = \
-                    self.rs_model.cluster_centers_.argsort()[:, ::-1]
-
-            terms = self.tfidf_model.get_feature_names()
-            for i in range(self.n_clusters):
-                print("Cluster {}:".format(i), end='')
-                for ind in order_centroids[i, :25]:
-                    print(' {}'.format(terms[ind]), end='')
-
-    def _transform(self, raw_documents):
-        self._vectorizer()
-        # process tf_vectorizer
-        self._fit_vectorizer(self.tfidf_model, raw_documents)
-        # fit tf-idf vector to lsa model
-        self._truncate_LSA()
+            rs_model.fit(poster_vect)
+        return rs_model
 
     def fit(self, raw_documents=None):
         """
@@ -286,20 +237,20 @@ class RecommendSystem(BaseRecommender):
         ----------
         raw_documents: iterable (recommend)
         """
-        self._transform(raw_documents)
-        self._save_model(self.lsa_matrix, "lsa_matrix")
+        self._vectorizer(raw_documents)
         if not self.use_cluster:
             self.rs_model = self._build_k_nearest_neighbors(self.lsa_matrix)
             self._save_model(self.rs_model, "knn_dump")
         else:
             self.rs_model = self._build_cluster_kmean(self.lsa_matrix)
             self._save_model(self.rs_model, "kmean_dump")
+        del self.lsa_matrix
         return self
 
-    def transform(self, raw_document, tfidf_model=None,
-                  lsa_model=None, load_model=False):
+    def transform(self, raw_document, path_tfidf_model=None,
+                  path_lsa_model=None, load_model=False):
         """
-        Transform single document from tf-idf vector to svd-lsa model
+        Transform single document from tf-idf vector to SVD-LSA model
 
         Parameters
         ----------
@@ -309,12 +260,14 @@ class RecommendSystem(BaseRecommender):
             raw_document = list(raw_document)
 
         if load_model:
-            tfidf_model = joblib.load("/tmp/model/tfidf_model.pkl")
-            lsa_model = joblib.load("/tmp/model/lsa_model.pkl")
+            if path_tfidf_model and path_lsa_model:
+                tfidf_model = joblib.load(path_tfidf_model)
+                lsa_model = joblib.load(path_lsa_model)
 
-        if tfidf_model is not None and lsa_model is not None:
-            tfidf_vectorizer = tfidf_model.transform(raw_document)
-            vectorizer = lsa_model.transform(tfidf_vectorizer)
+                tfidf_vectorizer = tfidf_model.transform(raw_document)
+                vectorizer = lsa_model.transform(tfidf_vectorizer)
+            else:
+                raise NotImplementedError("Path models are empty")
         else:
             tfidf_vectorizer = self.tfidf_model.transform(raw_document)
             vectorizer = self.lsa_model.transform(tfidf_vectorizer)
@@ -332,18 +285,17 @@ class RecommendSystem(BaseRecommender):
             If True, load model from pickle file
         """
         if self.rs_model is None and not load_model:
-            logger.warning('Please fit model before predict')
-            return self
+            raise NotImplementedError('Please fit model before predict!')
 
         if not self.use_cluster:
             if load_model:
-                self.rs_model = joblib.load("/tmp/model/knn_dump.pkl")
+                self.rs_model = joblib.load("model/knn_dump.pkl")
 
             _, recommend_index = self.rs_model.kneighbors(vectorizer)
             self.ind_documents = list(recommend_index.flatten())
         else:
             if load_model:
-                self.rs_model = joblib.load("/tmp/model/kmean_dump.pkl")
+                self.rs_model = joblib.load("model/kmean_dump.pkl")
             idx_cluster = self.rs_model.predict(vectorizer)
             ind_documents = np.where(self.rs_model.labels_ == idx_cluster)[0]
             self.ind_documents = random.sample(ind_documents, self.n_samples)
@@ -351,22 +303,7 @@ class RecommendSystem(BaseRecommender):
     # NOTE: use __enter__() and __exit__() to process context-manager (with)
     # Ex: `with RecommenderSystem() as rs: ..`
     def __enter__(self):
-        """
-        Performs any necessary initialization, and returns a value.
-        """
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        """
-        Always executed to perform necessary cleanup actions.
-
-        Parameters
-        ----------
-        exc_type:
-            The type of the exception.
-        exc_value:
-            The exception instance raised.
-        traceback:
-            A traceback instance.
-        """
-        return True  # True: Suppress this exception
+        return False  # True: Suppress this exception
