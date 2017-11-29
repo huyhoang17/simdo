@@ -7,7 +7,6 @@ from sklearn.cluster import (
     MiniBatchKMeans
 )
 from sklearn.decomposition import TruncatedSVD
-from sklearn.externals import joblib
 from sklearn.feature_extraction.text import (
     TfidfVectorizer,
     HashingVectorizer,
@@ -92,9 +91,7 @@ class RecommendSystem(BaseRecommender):
 
         # evaluate
         self.tfidf_model = None
-        self.tfidf_matrix = None
         self.lsa_model = None
-        self.lsa_matrix = None
         self.rs_model = None
 
         # result
@@ -117,11 +114,6 @@ class RecommendSystem(BaseRecommender):
         ----------
         dataset: iterable (recommend)
             raw description, name, ..
-        use_hashing: boolean, default=True
-            apply hashing vectorizer model first
-        use_idf: boolean, default=True
-            use `idf` equation
-        use_stopword: boolean, default=True
         """
         if self.use_stopword:
             self._stop_words()
@@ -150,14 +142,15 @@ class RecommendSystem(BaseRecommender):
 
         tfidf_matrix = vectorizer.fit_transform(dataset)
         self.tfidf_model = vectorizer
-        del dataset
 
         svd = TruncatedSVD(self.n_components)
         normalizer = Normalizer(copy=False)
         lsa = make_pipeline(svd, normalizer)
 
         self.lsa_model = lsa.fit(tfidf_matrix)
-        self.lsa_matrix = lsa.fit_transform(tfidf_matrix)
+        lsa_matrix = lsa.fit_transform(tfidf_matrix)
+
+        return lsa_matrix
 
     def _build_k_nearest_neighbors(self, poster_vect):
         """
@@ -168,11 +161,11 @@ class RecommendSystem(BaseRecommender):
         ----------
         poster_vect: np.array
             tf-idf matrix
-        n_recommend: int, default=20
-            Top n similar document evaluate by metric (default: `cosine`)
         """
-        if self.n_recommend is None:
-            self.n_recommend = poster_vect.shape[0]
+        if poster_vect is None:
+            raise NotImplementedError(
+                "Must fit LSA model before implement neighbor searches"
+            )
         rs_model = NearestNeighbors(
             n_neighbors=self.n_recommend, metric=self.metric
         ).fit(poster_vect)
@@ -180,7 +173,16 @@ class RecommendSystem(BaseRecommender):
         return rs_model
 
     def _build_cluster_kmean(self, poster_vect):
-        if self.lsa_matrix is None:
+        """
+        Unsupervised learner for implementing neighbor searches.
+        Create nn model from svd matrix
+
+        Parameters
+        ----------
+        poster_vect: np.array
+            tf-idf matrix
+        """
+        if poster_vect is None:
             raise NotImplementedError("Must fit LSA model before clustering")
         if self.use_minibatch:
             logger.info("==> Using Minibatch KMean Cluster")
@@ -213,17 +215,14 @@ class RecommendSystem(BaseRecommender):
         ----------
         raw_documents: iterable (recommend)
         """
-        self._vectorizer(raw_documents)
+        lsa_matrix = self._vectorizer(raw_documents)
         if not self.use_cluster:
-            self.rs_model = self._build_k_nearest_neighbors(self.lsa_matrix)
-            # self._save_model(self.rs_model, "knn_dump")
+            self.rs_model = self._build_k_nearest_neighbors(lsa_matrix)
         else:
-            self.rs_model = self._build_cluster_kmean(self.lsa_matrix)
-            # self._save_model(self.rs_model, "kmean_dump")
-        del self.lsa_matrix
+            self.rs_model = self._build_cluster_kmean(lsa_matrix)
         return self
 
-    def transform(self, raw_document, load_model=False, path_model=None):
+    def transform(self, raw_document):
         """
         Transform single document from tf-idf vector to SVD-LSA model
 
@@ -234,20 +233,8 @@ class RecommendSystem(BaseRecommender):
         if isinstance(raw_document, str):
             raw_document = list(raw_document)
 
-        if load_model:
-            if path_model:
-                self.path_model = path_model
-                self._model = joblib.load(path_model)
-                tfidf_model = self._model.tfidf_model
-                lsa_model = self._model.lsa_model
-
-                tfidf_vectorizer = tfidf_model.transform(raw_document)
-                vectorizer = lsa_model.transform(tfidf_vectorizer)
-            else:
-                raise NotImplementedError("Path model is empty!")
-        else:
-            tfidf_vectorizer = self.tfidf_model.transform(raw_document)
-            vectorizer = self.lsa_model.transform(tfidf_vectorizer)
+        tfidf_vectorizer = self.tfidf_model.transform(raw_document)
+        vectorizer = self.lsa_model.transform(tfidf_vectorizer)
         return vectorizer
 
     def evaluate(self, vectorizer):
@@ -258,18 +245,17 @@ class RecommendSystem(BaseRecommender):
         ----------
         vectorizer: np.array
             LSA matrix
-        load_model: bool, default to False
-            If True, load model from pickle file
         """
-        if self.rs_model is None:
-            raise NotImplementedError('Please fit model before predict!')
-
         if self.use_cluster:
-            idx_cluster = self._model.rs_model.predict(vectorizer)
+            idx_cluster = self.rs_model.predict(vectorizer)
             ind_documents = list(np.where(
-                self._model.rs_model.labels_ == idx_cluster
+                self.rs_model.labels_ == idx_cluster
             )[0])
-            self.ind_documents = random.sample(ind_documents, self.n_samples)
+            self.ind_documents = random.sample(
+                ind_documents, self.n_samples
+            )
         else:
-            _, recommend_index = self._model.rs_model.kneighbors(vectorizer)
+            _, recommend_index = self.rs_model.kneighbors(vectorizer)
             self.ind_documents = list(recommend_index.flatten())
+
+        return self.ind_documents
